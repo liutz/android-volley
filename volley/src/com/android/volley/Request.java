@@ -1,3 +1,19 @@
+/*
+ * Copyright (C) 2011 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.android.volley;
 
 import android.net.TrafficStats;
@@ -6,17 +22,13 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.text.TextUtils;
+
 import com.android.volley.VolleyLog.MarkerLog;
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.util.Collections;
 import java.util.Map;
-import java.util.zip.GZIPInputStream;
 
 /**
  * Base class for all network requests.
@@ -39,12 +51,19 @@ public abstract class Request<T> implements Comparable<Request<T>> {
         int POST = 1;
         int PUT = 2;
         int DELETE = 3;
+        int HEAD = 4;
+        int OPTIONS = 5;
+        int TRACE = 6;
+        int PATCH = 7;
     }
 
     /** An event log tracing the lifetime of this request; for debugging. */
     private final MarkerLog mEventLog = MarkerLog.ENABLED ? new MarkerLog() : null;
 
-    /** Request method of this request.  Currently supports GET, POST, PUT, and DELETE. */
+    /**
+     * Request method of this request.  Currently supports GET, POST, PUT, DELETE, HEAD, OPTIONS,
+     * TRACE, and PATCH.
+     */
     private final int mMethod;
 
     /** URL of this request. */
@@ -64,20 +83,12 @@ public abstract class Request<T> implements Comparable<Request<T>> {
 
     /** Whether or not responses to this request should be cached. */
     private boolean mShouldCache = true;
-    /** Whether or not responses to this request should be force cache. */
-    private boolean mforceCache;
 
     /** Whether or not this request has been canceled. */
     private boolean mCanceled = false;
 
     /** Whether or not a response has been delivered for this request yet. */
     private boolean mResponseDelivered = false;
-
-    // A cheap variant of request tracing used to dump slow requests.
-    private long mRequestBirthTime = 0;
-
-    /** Threshold at which we should log the request (even when debug logging is not enabled). */
-    private static final long SLOW_REQUEST_THRESHOLD_MS = 3000;
 
     /** The retry policy for this request. */
     private RetryPolicy mRetryPolicy;
@@ -100,6 +111,7 @@ public abstract class Request<T> implements Comparable<Request<T>> {
      *
      * @deprecated Use {@link #Request(int, String, com.android.volley.Response.ErrorListener)}.
      */
+    @Deprecated
     public Request(String url, Response.ErrorListener listener) {
         this(Method.DEPRECATED_GET_OR_POST, url, listener);
     }
@@ -116,7 +128,7 @@ public abstract class Request<T> implements Comparable<Request<T>> {
         mErrorListener = listener;
         setRetryPolicy(new DefaultRetryPolicy());
 
-        mDefaultTrafficStatsTag = TextUtils.isEmpty(url) ? 0: Uri.parse(url).getHost().hashCode();
+        mDefaultTrafficStatsTag = findDefaultTrafficStatsTag(url);
     }
 
     /**
@@ -129,9 +141,12 @@ public abstract class Request<T> implements Comparable<Request<T>> {
     /**
      * Set a tag on this request. Can be used to cancel all requests with this
      * tag by {@link RequestQueue#cancelAll(Object)}.
+     *
+     * @return This Request object to allow for chaining.
      */
-    public void setTag(Object tag) {
+    public Request<?> setTag(Object tag) {
         mTag = tag;
+        return this;
     }
 
     /**
@@ -143,6 +158,13 @@ public abstract class Request<T> implements Comparable<Request<T>> {
     }
 
     /**
+     * @return this request's {@link com.android.volley.Response.ErrorListener}.
+     */
+    public Response.ErrorListener getErrorListener() {
+        return mErrorListener;
+    }
+
+    /**
      * @return A tag for use with {@link TrafficStats#setThreadStatsTag(int)}
      */
     public int getTrafficStatsTag() {
@@ -150,10 +172,29 @@ public abstract class Request<T> implements Comparable<Request<T>> {
     }
 
     /**
-     * Sets the retry policy for this request.
+     * @return The hashcode of the URL's host component, or 0 if there is none.
      */
-    public void setRetryPolicy(RetryPolicy retryPolicy) {
+    private static int findDefaultTrafficStatsTag(String url) {
+        if (!TextUtils.isEmpty(url)) {
+            Uri uri = Uri.parse(url);
+            if (uri != null) {
+                String host = uri.getHost();
+                if (host != null) {
+                    return host.hashCode();
+                }
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Sets the retry policy for this request.
+     *
+     * @return This Request object to allow for chaining.
+     */
+    public Request<?> setRetryPolicy(RetryPolicy retryPolicy) {
         mRetryPolicy = retryPolicy;
+        return this;
     }
 
     /**
@@ -162,8 +203,6 @@ public abstract class Request<T> implements Comparable<Request<T>> {
     public void addMarker(String tag) {
         if (MarkerLog.ENABLED) {
             mEventLog.add(tag, Thread.currentThread().getId());
-        } else if (mRequestBirthTime == 0) {
-            mRequestBirthTime = SystemClock.elapsedRealtime();
         }
     }
 
@@ -194,27 +233,28 @@ public abstract class Request<T> implements Comparable<Request<T>> {
 
             mEventLog.add(tag, threadId);
             mEventLog.finish(this.toString());
-        } else {
-            long requestTime = SystemClock.elapsedRealtime() - mRequestBirthTime;
-            if (requestTime >= SLOW_REQUEST_THRESHOLD_MS) {
-                VolleyLog.d("%d ms: %s", requestTime, this.toString());
-            }
         }
     }
 
     /**
      * Associates this request with the given queue. The request queue will be notified when this
      * request has finished.
+     *
+     * @return This Request object to allow for chaining.
      */
-    public void setRequestQueue(RequestQueue requestQueue) {
+    public Request<?> setRequestQueue(RequestQueue requestQueue) {
         mRequestQueue = requestQueue;
+        return this;
     }
 
     /**
      * Sets the sequence number of this request.  Used by {@link RequestQueue}.
+     *
+     * @return This Request object to allow for chaining.
      */
-    public final void setSequence(int sequence) {
+    public final Request<?> setSequence(int sequence) {
         mSequence = sequence;
+        return this;
     }
 
     /**
@@ -244,9 +284,12 @@ public abstract class Request<T> implements Comparable<Request<T>> {
     /**
      * Annotates this request with an entry retrieved for it from cache.
      * Used for cache coherency support.
+     *
+     * @return This Request object to allow for chaining.
      */
-    public void setCacheEntry(Cache.Entry entry) {
+    public Request<?> setCacheEntry(Cache.Entry entry) {
         mCacheEntry = entry;
+        return this;
     }
 
     /**
@@ -291,6 +334,7 @@ public abstract class Request<T> implements Comparable<Request<T>> {
      *
      * @deprecated Use {@link #getParams()} instead.
      */
+    @Deprecated
     protected Map<String, String> getPostParams() throws AuthFailureError {
         return getParams();
     }
@@ -309,6 +353,7 @@ public abstract class Request<T> implements Comparable<Request<T>> {
      *
      * @deprecated Use {@link #getParamsEncoding()} instead.
      */
+    @Deprecated
     protected String getPostParamsEncoding() {
         return getParamsEncoding();
     }
@@ -316,6 +361,7 @@ public abstract class Request<T> implements Comparable<Request<T>> {
     /**
      * @deprecated Use {@link #getBodyContentType()} instead.
      */
+    @Deprecated
     public String getPostBodyContentType() {
         return getBodyContentType();
     }
@@ -327,6 +373,7 @@ public abstract class Request<T> implements Comparable<Request<T>> {
      *
      * @deprecated Use {@link #getBody()} instead.
      */
+    @Deprecated
     public byte[] getPostBody() throws AuthFailureError {
         // Note: For compatibility with legacy clients of volley, this implementation must remain
         // here instead of simply calling the getBody() function because this function must
@@ -367,12 +414,19 @@ public abstract class Request<T> implements Comparable<Request<T>> {
         return DEFAULT_PARAMS_ENCODING;
     }
 
+    /**
+     * Returns the content type of the POST or PUT body.
+     */
     public String getBodyContentType() {
         return "application/x-www-form-urlencoded; charset=" + getParamsEncoding();
     }
 
     /**
      * Returns the raw POST or PUT body to be sent.
+     *
+     * <p>By default, the body consists of the request parameters in
+     * application/x-www-form-urlencoded format. When overriding this method, consider overriding
+     * {@link #getBodyContentType()} as well to match the new body format.
      *
      * @throws AuthFailureError in the event of auth failure
      */
@@ -401,25 +455,15 @@ public abstract class Request<T> implements Comparable<Request<T>> {
             throw new RuntimeException("Encoding not supported: " + paramsEncoding, uee);
         }
     }
-    /**
-     * Set whether or not responses to this request should be check.
-     */
-    public final void setForceCache(boolean forceCache) {
-    	mforceCache = forceCache;
-    }
-
-    /**
-     * Returns true if responses to this request should be check.
-     */
-    public final boolean isForceCache() {
-        return mforceCache;
-    }
 
     /**
      * Set whether or not responses to this request should be cached.
+     *
+     * @return This Request object to allow for chaining.
      */
-    public final void setShouldCache(boolean shouldCache) {
+    public final Request<?> setShouldCache(boolean shouldCache) {
         mShouldCache = shouldCache;
+        return this;
     }
 
     /**
@@ -542,41 +586,5 @@ public abstract class Request<T> implements Comparable<Request<T>> {
         String trafficStatsTag = "0x" + Integer.toHexString(getTrafficStatsTag());
         return (mCanceled ? "[X] " : "[ ] ") + getUrl() + " " + trafficStatsTag + " "
                 + getPriority() + " " + mSequence;
-    }
-    
-    private int getShort(byte[] data){
-    	return (int) ((data[0] << 8) | data[1] & 0xFF);
-    }
-    
-    // 支持gzip数据
-    public String getRealString(byte[] data) throws UnsupportedEncodingException{
-    	VolleyLog.d("JSONArrayRequest data length %d",data.length);
-    	try {
-    		byte[] h = new byte[2];
-    		h[0] = (data)[0];
-    		h[1] = (data)[1];
-    		int head = getShort(h);
-    		boolean t = head == 0x1f8b;
-    		InputStream in;
-    		StringBuilder sb = new StringBuilder();
-	
-    		ByteArrayInputStream bis = new ByteArrayInputStream(data);
-    		if (t) {	    	
-				in = new GZIPInputStream(bis);			
-				VolleyLog.d("JSONArrayRequest gzip");
-    		} else {
-    			in = bis;
-    			VolleyLog.d("JSONArrayRequest not gzip");
-    		}
-    		BufferedReader r = new BufferedReader(new InputStreamReader(in,"UTF-8"), 1000);
-    		for (String line = r.readLine(); line != null; line = r.readLine()){
-    			sb.append(line);
-    		}
-    		in.close();	
-    		return sb.toString();
-    	} catch (IOException e) {
-			e.printStackTrace();
-		}
-    	return new String(data,"UTF-8");	   
     }
 }

@@ -1,3 +1,19 @@
+/*
+ * Copyright (C) 2011 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.android.volley.toolbox;
 
 import com.android.volley.AuthFailureError;
@@ -14,7 +30,7 @@ import android.os.Bundle;
  * tokens of a specified type for a specified account.
  */
 public class AndroidAuthenticator implements Authenticator {
-    private final Context mContext;
+    private final AccountManager mAccountManager;
     private final Account mAccount;
     private final String mAuthTokenType;
     private final boolean mNotifyAuthFailure;
@@ -38,7 +54,13 @@ public class AndroidAuthenticator implements Authenticator {
      */
     public AndroidAuthenticator(Context context, Account account, String authTokenType,
             boolean notifyAuthFailure) {
-        mContext = context;
+        this(AccountManager.get(context), account, authTokenType, notifyAuthFailure);
+    }
+
+    // Visible for testing. Allows injection of a mock AccountManager.
+    AndroidAuthenticator(AccountManager accountManager, Account account,
+            String authTokenType, boolean notifyAuthFailure) {
+        mAccountManager = accountManager;
         mAccount = account;
         mAuthTokenType = authTokenType;
         mNotifyAuthFailure = notifyAuthFailure;
@@ -51,10 +73,11 @@ public class AndroidAuthenticator implements Authenticator {
         return mAccount;
     }
 
+    // TODO: Figure out what to do about notifyAuthFailure
+    @SuppressWarnings("deprecation")
     @Override
     public String getAuthToken() throws AuthFailureError {
-        final AccountManager accountManager = AccountManager.get(mContext);
-        AccountManagerFuture<Bundle> future = accountManager.getAuthToken(mAccount,
+        AccountManagerFuture<Bundle> future = mAccountManager.getAuthToken(mAccount,
                 mAuthTokenType, mNotifyAuthFailure, null, null);
         Bundle result;
         try {
@@ -79,6 +102,6 @@ public class AndroidAuthenticator implements Authenticator {
 
     @Override
     public void invalidateAuthToken(String authToken) {
-        AccountManager.get(mContext).invalidateAuthToken(mAccount.type, authToken);
+        mAccountManager.invalidateAuthToken(mAccount.type, authToken);
     }
 }

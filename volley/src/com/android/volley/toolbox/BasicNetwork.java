@@ -1,9 +1,26 @@
+/*
+ * Copyright (C) 2011 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.android.volley.toolbox;
 
 import android.os.SystemClock;
 
 import com.android.volley.AuthFailureError;
 import com.android.volley.Cache;
+import com.android.volley.Cache.Entry;
 import com.android.volley.Network;
 import com.android.volley.NetworkError;
 import com.android.volley.NetworkResponse;
@@ -27,9 +44,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.MalformedURLException;
 import java.net.SocketTimeoutException;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * A network performing Volley requests over an {@link HttpStack}.
@@ -39,7 +58,7 @@ public class BasicNetwork implements Network {
 
     private static int SLOW_REQUEST_THRESHOLD_MS = 3000;
 
-    private static int DEFAULT_POOL_SIZE = 8192;
+    private static int DEFAULT_POOL_SIZE = 4096;
 
     protected final HttpStack mHttpStack;
 
@@ -69,12 +88,10 @@ public class BasicNetwork implements Network {
         while (true) {
             HttpResponse httpResponse = null;
             byte[] responseContents = null;
-            Map<String, String> responseHeaders = new HashMap<String, String>();
+            Map<String, String> responseHeaders = Collections.emptyMap();
             try {
                 // Gather headers.
                 Map<String, String> headers = new HashMap<String, String>();
-                // 测试etag与服务器不一样
-                // request.getCacheEntry().etag="test";
                 addCacheHeaders(headers, request.getCacheEntry());
                 httpResponse = mHttpStack.performRequest(request, headers);
                 StatusLine statusLine = httpResponse.getStatusLine();
@@ -83,19 +100,42 @@ public class BasicNetwork implements Network {
                 responseHeaders = convertHeaders(httpResponse.getAllHeaders());
                 // Handle cache validation.
                 if (statusCode == HttpStatus.SC_NOT_MODIFIED) {
-                    return new NetworkResponse(HttpStatus.SC_NOT_MODIFIED,
-                            request.getCacheEntry().data, responseHeaders, true);
+
+                    Entry entry = request.getCacheEntry();
+                    if (entry == null) {
+                        return new NetworkResponse(HttpStatus.SC_NOT_MODIFIED, null,
+                                responseHeaders, true,
+                                SystemClock.elapsedRealtime() - requestStart);
+                    }
+
+                    // A HTTP 304 response does not have all header fields. We
+                    // have to use the header fields from the cache entry plus
+                    // the new ones from the response.
+                    // http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.3.5
+                    entry.responseHeaders.putAll(responseHeaders);
+                    return new NetworkResponse(HttpStatus.SC_NOT_MODIFIED, entry.data,
+                            entry.responseHeaders, true,
+                            SystemClock.elapsedRealtime() - requestStart);
                 }
 
-                responseContents = entityToBytes(httpResponse.getEntity());
+                // Some responses such as 204s do not have content.  We must check.
+                if (httpResponse.getEntity() != null) {
+                  responseContents = entityToBytes(httpResponse.getEntity());
+                } else {
+                  // Add 0 byte response as a way of honestly representing a
+                  // no-content request.
+                  responseContents = new byte[0];
+                }
+
                 // if the request is slow, log it.
                 long requestLifetime = SystemClock.elapsedRealtime() - requestStart;
                 logSlowRequests(requestLifetime, request, responseContents, statusLine);
 
-                if (statusCode != HttpStatus.SC_OK && statusCode != HttpStatus.SC_NO_CONTENT) {
+                if (statusCode < 200 || statusCode > 299) {
                     throw new IOException();
                 }
-                return new NetworkResponse(statusCode, responseContents, responseHeaders, false);
+                return new NetworkResponse(statusCode, responseContents, responseHeaders, false,
+                        SystemClock.elapsedRealtime() - requestStart);
             } catch (SocketTimeoutException e) {
                 attemptRetryOnException("socket", request, new TimeoutError());
             } catch (ConnectTimeoutException e) {
@@ -103,7 +143,6 @@ public class BasicNetwork implements Network {
             } catch (MalformedURLException e) {
                 throw new RuntimeException("Bad URL " + request.getUrl(), e);
             } catch (IOException e) {
-            	e.printStackTrace();
                 int statusCode = 0;
                 NetworkResponse networkResponse = null;
                 if (httpResponse != null) {
@@ -114,7 +153,7 @@ public class BasicNetwork implements Network {
                 VolleyLog.e("Unexpected response code %d for %s", statusCode, request.getUrl());
                 if (responseContents != null) {
                     networkResponse = new NetworkResponse(statusCode, responseContents,
-                            responseHeaders, false);
+                            responseHeaders, false, SystemClock.elapsedRealtime() - requestStart);
                     if (statusCode == HttpStatus.SC_UNAUTHORIZED ||
                             statusCode == HttpStatus.SC_FORBIDDEN) {
                         attemptRetryOnException("auth",
@@ -173,8 +212,8 @@ public class BasicNetwork implements Network {
             headers.put("If-None-Match", entry.etag);
         }
 
-        if (entry.serverDate > 0) {
-            Date refTime = new Date(entry.serverDate);
+        if (entry.lastModified > 0) {
+            Date refTime = new Date(entry.lastModified);
             headers.put("If-Modified-Since", DateUtils.formatDate(refTime));
         }
     }
@@ -217,8 +256,8 @@ public class BasicNetwork implements Network {
     /**
      * Converts Headers[] to Map<String, String>.
      */
-    private static Map<String, String> convertHeaders(Header[] headers) {
-        Map<String, String> result = new HashMap<String, String>();
+    protected static Map<String, String> convertHeaders(Header[] headers) {
+        Map<String, String> result = new TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER);
         for (int i = 0; i < headers.length; i++) {
             result.put(headers[i].getName(), headers[i].getValue());
         }

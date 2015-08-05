@@ -1,6 +1,23 @@
+/*
+ * Copyright (C) 2011 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.android.volley;
 
 import android.os.Process;
+
 import java.util.concurrent.BlockingQueue;
 
 /**
@@ -12,16 +29,15 @@ import java.util.concurrent.BlockingQueue;
  * refresh are enqueued on the specified network queue for processing
  * by a {@link NetworkDispatcher}.
  */
-@SuppressWarnings("rawtypes")
 public class CacheDispatcher extends Thread {
 
     private static final boolean DEBUG = VolleyLog.DEBUG;
 
     /** The queue of requests coming in for triage. */
-    private final BlockingQueue<Request> mCacheQueue;
+    private final BlockingQueue<Request<?>> mCacheQueue;
 
     /** The queue of requests going out to the network. */
-    private final BlockingQueue<Request> mNetworkQueue;
+    private final BlockingQueue<Request<?>> mNetworkQueue;
 
     /** The cache to read from. */
     private final Cache mCache;
@@ -42,7 +58,7 @@ public class CacheDispatcher extends Thread {
      * @param delivery Delivery interface to use for posting responses
      */
     public CacheDispatcher(
-            BlockingQueue<Request> cacheQueue, BlockingQueue<Request> networkQueue,
+            BlockingQueue<Request<?>> cacheQueue, BlockingQueue<Request<?>> networkQueue,
             Cache cache, ResponseDelivery delivery) {
         mCacheQueue = cacheQueue;
         mNetworkQueue = networkQueue;
@@ -71,7 +87,7 @@ public class CacheDispatcher extends Thread {
             try {
                 // Get a request from the cache triage queue, blocking until
                 // at least one is available.
-                final Request request = mCacheQueue.take();
+                final Request<?> request = mCacheQueue.take();
                 request.addMarker("cache-queue-take");
 
                 // If the request has been canceled, don't bother dispatching it.
@@ -88,59 +104,47 @@ public class CacheDispatcher extends Thread {
                     mNetworkQueue.put(request);
                     continue;
                 }
-                
-                boolean forceCache = request.isForceCache();
-                
-                if(!forceCache){
-                	// If it is completely expired, just send it to the network.
-                	if (entry.isExpired()) {
-                        request.addMarker("cache-hit-expired");
-                        request.setCacheEntry(entry);
-                        mNetworkQueue.put(request);
-                        continue;
-                    }
-                }              
+
+                // If it is completely expired, just send it to the network.
+                if (entry.isExpired()) {
+                    request.addMarker("cache-hit-expired");
+                    request.setCacheEntry(entry);
+                    mNetworkQueue.put(request);
+                    continue;
+                }
 
                 // We have a cache hit; parse its data for delivery back to the request.
                 request.addMarker("cache-hit");
                 Response<?> response = request.parseNetworkResponse(
                         new NetworkResponse(entry.data, entry.responseHeaders));
-                request.addMarker("cache-hit-parsed");            	
-                if (!forceCache) {
-                	if(!entry.refreshNeeded()){
-                		 // Completely unexpired cache hit. Just deliver the response.
-                        mDelivery.postResponse(request, response);
-                        continue;
-                	}else{
-                		// Soft-expired cache hit. We can deliver the cached response,
-                        // but we need to also send the request to the network for
-                        // refreshing.
-                        request.addMarker("cache-hit-refresh-needed");                        
-                	}
-                   
-                } else {                
+                request.addMarker("cache-hit-parsed");
+
+                if (!entry.refreshNeeded()) {
+                    // Completely unexpired cache hit. Just deliver the response.
+                    mDelivery.postResponse(request, response);
+                } else {
                     // Soft-expired cache hit. We can deliver the cached response,
                     // but we need to also send the request to the network for
                     // refreshing.
-                    request.addMarker("cache-hit-check refresh-needed");                    
-                }
-                
-                request.setCacheEntry(entry);
-                // Mark the response as intermediate.
-                response.intermediate = true;
+                    request.addMarker("cache-hit-refresh-needed");
+                    request.setCacheEntry(entry);
 
-                // Post the intermediate response back to the user and have
-                // the delivery then forward the request along to the network.
-                mDelivery.postResponse(request, response, new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            mNetworkQueue.put(request);
-                        } catch (InterruptedException e) {
-                            // Not much we can do about this.
+                    // Mark the response as intermediate.
+                    response.intermediate = true;
+
+                    // Post the intermediate response back to the user and have
+                    // the delivery then forward the request along to the network.
+                    mDelivery.postResponse(request, response, new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                mNetworkQueue.put(request);
+                            } catch (InterruptedException e) {
+                                // Not much we can do about this.
+                            }
                         }
-                    }
-                });
+                    });
+                }
 
             } catch (InterruptedException e) {
                 // We may have been interrupted because it was time to quit.
