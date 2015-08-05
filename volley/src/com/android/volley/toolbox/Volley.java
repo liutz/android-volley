@@ -6,13 +6,9 @@ import android.content.pm.PackageManager.NameNotFoundException;
 import android.net.http.AndroidHttpClient;
 import android.os.Build;
 import android.os.Environment;
-import android.util.Log;
-
 import com.android.volley.Network;
 import com.android.volley.RequestQueue;
-import com.android.volley.VolleyLog;
 import com.android.volley.ext.Utils;
-
 import java.io.File;
 
 public class Volley {
