@@ -2,10 +2,8 @@ package com.android.volley.toolbox.ext;
 
 import java.io.UnsupportedEncodingException;
 import java.util.Map;
-
 import org.json.JSONException;
 import org.json.JSONObject;
-
 import com.android.volley.AuthFailureError;
 import com.android.volley.NetworkResponse;
 import com.android.volley.ParseError;

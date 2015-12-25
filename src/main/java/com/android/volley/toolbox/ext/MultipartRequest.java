@@ -15,9 +15,6 @@ import java.io.UnsupportedEncodingException;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * 定制的请求类
- */
 public class MultipartRequest extends Request<String> {
 
     MultipartEntity mMultiPartEntity = new MultipartEntity();
